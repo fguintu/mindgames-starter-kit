@@ -18,7 +18,7 @@ Complete your team registration via our [official registration form](https://doc
 First, clone the starter kit repository:
 
 ```shell
-git clone https://github.com/mind-games-challenge/mindgames-starter-kit.git
+git clone https://github.com/fguintu/mindgames-starter-kit.git
 cd mindgames-starter-kit
 ```
 
