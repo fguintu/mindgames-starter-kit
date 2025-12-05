@@ -12,6 +12,15 @@ import random
 import re
 from agent import HumanAgent
 from myagent import ExpectimaxMafiaAgent
+import os
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
+
+# Verify API key is set
+if not os.getenv("OPENROUTER_API_KEY"):
+    raise ValueError("OPENROUTER_API_KEY not found. Create a .env file with: OPENROUTER_API_KEY=your_key_here")
 
 # ===========================================
 # CONFIGURATION
@@ -72,10 +81,10 @@ for i in range(NUM_PLAYERS):
         # Try different agent options
         try:
             # Option 1: Use OpenRouter API agents (requires API key in environment)
-            # agents[i] = ta.agents.OpenRouterAgent(model_name="google/gemini-2.0-flash-lite-001")
+            agents[i] = ta.agents.OpenRouterAgent(model_name="google/gemini-2.0-flash-lite-001")
             
             # Option 2: Use textarena's RandomAgent if available
-            agents[i] = ta.agents.RandomAgent()
+            # agents[i] = ta.agents.RandomAgent()
         except AttributeError:
             # Option 3: Use our simple random agent as fallback
             agents[i] = SimpleRandomAgent()
