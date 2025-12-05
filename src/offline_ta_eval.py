@@ -1,11 +1,12 @@
 """
 Offline evaluation script for ExpectimaxMafiaAgent.
-Evaluates the agent against random opponents on SecretMafia-v0.
+Evaluates the agent against OpenRouter LLM opponents on SecretMafia-v0.
 """
 import os
 import re
 import random
 from collections import defaultdict
+from dotenv import load_dotenv
 
 import numpy as np
 import pandas as pd
@@ -13,6 +14,13 @@ from tqdm import tqdm
 
 import textarena as ta
 from myagent import ExpectimaxMafiaAgent
+
+# Load environment variables from .env file
+load_dotenv()
+
+# Verify API key is set
+if not os.getenv("OPENROUTER_API_KEY"):
+    raise ValueError("OPENROUTER_API_KEY not found. Create a .env file with: OPENROUTER_API_KEY=your_key_here")
 
 # ===========================================
 # CONFIGURATION
@@ -22,22 +30,8 @@ EVAL_ENV_IDS = [("SecretMafia-v0", 6)]  # (env-id, num_players)
 FILE_NAME = "eval_summary.csv"
 VERBOSE = False  # Set True to see game outcomes
 
-
-# ===========================================
-# SIMPLE RANDOM AGENT (opponent)
-# ===========================================
-class RandomAgent:
-    """Simple random agent for evaluation."""
-    
-    def __call__(self, observation: str) -> str:
-        targets = re.findall(r"\[(\d+)\]", observation)
-        if targets:
-            return f"[{random.choice(targets)}]"
-        return random.choice([
-            "I'm not sure who to trust.",
-            "We need to find the Mafia.",
-            "Let's think carefully.",
-        ])
+# OpenRouter opponent model
+OPPONENT_MODEL = "google/gemini-2.0-flash-lite-001"
 
 
 # ===========================================
@@ -50,9 +44,10 @@ model = ExpectimaxMafiaAgent(
     quantize=False,
 )
 print("Model loaded.\n")
+print(f"Opponent: {OPPONENT_MODEL}\n")
 
 
-def run_game(env_id: str, num_players: int, model, opponent_class) -> dict:
+def run_game(env_id: str, num_players: int, model) -> dict:
     """Play one episode and return per-episode stats for the *model* player."""
     env = ta.make(env_id)
     env.reset(num_players=num_players)
@@ -60,8 +55,11 @@ def run_game(env_id: str, num_players: int, model, opponent_class) -> dict:
     # Randomly assign model to a player slot
     model_pid = np.random.randint(0, num_players)
     
-    # Create fresh opponents for each game
-    opponents = {i: opponent_class() for i in range(num_players) if i != model_pid}
+    # Create OpenRouter opponents for other players
+    opponents = {}
+    for i in range(num_players):
+        if i != model_pid:
+            opponents[i] = ta.agents.OpenRouterAgent(model_name=OPPONENT_MODEL)
     
     # Reset model state for new game
     model.reset()
@@ -118,7 +116,7 @@ for env_id, num_players in outer_bar:
     
     inner_bar = tqdm(range(NUM_EPISODES), desc=f"Evaluating {env_id}", leave=False)
     for ep in inner_bar:
-        outcome = run_game(env_id, num_players, model, RandomAgent)
+        outcome = run_game(env_id, num_players, model)
         
         # W/L/D
         if outcome["model_reward"] > outcome["opponent_reward"]:
@@ -163,6 +161,7 @@ df = pd.DataFrame(results)
 
 print("\n" + "=" * 60)
 print("EVALUATION SUMMARY")
+print(f"Opponent: {OPPONENT_MODEL}")
 print("=" * 60)
 print(df.to_markdown(index=False, floatfmt=".3f"))
 
