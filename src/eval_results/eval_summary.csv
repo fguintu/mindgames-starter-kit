@@ -1,0 +1,2 @@
+env_id,games,win_rate,loss_rate,draw_rate,invalid_rate,avg_turns,avg_model_reward,avg_opponent_reward
+SecretMafia-v0,65,0.4461538461538462,0.5538461538461539,0.0,0.015384615384615385,32.44615384615385,-0.1076923076923077,-0.0953846153846154

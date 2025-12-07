@@ -50,7 +50,7 @@ class ExpectimaxMafiaAgent(Agent):
         
         self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=False)
         hf_kwargs = hf_kwargs or {}
-        hf_kwargs.setdefault('torch_dtype', torch.float16)
+        hf_kwargs.setdefault('dtype', torch.float16)
         hf_kwargs.setdefault('trust_remote_code', False)
         
         if quantize:
@@ -516,7 +516,45 @@ CONFIDENCE: HIGH"""
 
     def _discussion_action(self, observation: str) -> str:
         self.statements_this_day += 1
+        
+        # Mafia uses hardcoded strategic templates (more effective for deception)
+        if self.role == "Mafia":
+            return self._mafia_discussion()
+        
+        # Other roles use LLM for more natural/adaptive responses
         return self._generate_discussion_llm()
+
+    def _mafia_discussion(self) -> str:
+        """Hardcoded Mafia discussion - strategic deception templates."""
+        # If someone is confirmed Mafia and it's not us/teammate, pretend to agree
+        other_mafia = [p for p in self.confirmed_mafia if p in self.alive_players 
+                       and p != self.player_id and p not in self.teammates]
+        if other_mafia:
+            return f"I agree, Player {other_mafia[0]} does seem suspicious."
+        
+        # Deflect to a village player who seems suspicious
+        village_suspects = [p for p in self._get_top_suspects(exclude_confirmed=True) 
+                          if p not in self.teammates]
+        if village_suspects:
+            target = village_suspects[0]
+            phrases = [
+                f"I've been watching Player {target} and they seem nervous.",
+                f"Player {target} hasn't really helped the village. Suspicious.",
+                f"Something about Player {target} doesn't feel right to me.",
+                f"Has anyone else noticed Player {target} being evasive?",
+                f"I'm getting bad vibes from Player {target}.",
+                f"Player {target} is being too quiet. What are they hiding?",
+            ]
+            return random.choice(phrases)
+        
+        # Generic deflection
+        deflections = [
+            "Let's not rush to judgment. We need solid evidence before voting.",
+            "I think we should hear from everyone before deciding.",
+            "We need to be careful not to vote out an innocent.",
+            "Does anyone have concrete evidence?",
+        ]
+        return random.choice(deflections)
 
     def _generate_discussion_llm(self) -> str:
         """Use LLM to generate contextually appropriate discussion message."""
@@ -785,9 +823,10 @@ Players: Player 0, Player 1, Player 2, Player 3, Player 4, Player 5""")
         print("✓ LLM correctly increased suspicion on accused player")
     
     print("\n" + "=" * 60)
-    print("TEST 8: LLM discussion generation for different roles")
+    print("TEST 8: Discussion generation for different roles")
     print("=" * 60)
     
+    # Test Mafia discussion (hardcoded templates)
     agent.reset()
     agent._initialize_from_observation("""Welcome to Secret Mafia! You are Player 1.
 Your role: Mafia
@@ -795,10 +834,23 @@ Team: Mafia
 Players: Player 0, Player 1, Player 2, Player 3, Player 4, Player 5
 Your teammates are: Player 1, Player 4.""")
     
-    response = agent._generate_discussion_llm()
-    print(f"Mafia discussion: {response}")
+    response = agent._mafia_discussion()
+    print(f"Mafia discussion (template): {response}")
     assert "i am mafia" not in response.lower(), "Mafia shouldn't reveal role"
+    assert len(response) > 10, "Should have meaningful content"
     print("✓ Mafia generated appropriate cover discussion")
+    
+    # Test Villager discussion (LLM)
+    agent.reset()
+    agent._initialize_from_observation("""Welcome to Secret Mafia! You are Player 0.
+Your role: Villager
+Team: Village
+Players: Player 0, Player 1, Player 2, Player 3, Player 4, Player 5""")
+    
+    response = agent._generate_discussion_llm()
+    print(f"Villager discussion (LLM): {response}")
+    assert len(response) > 5, "Should have content"
+    print("✓ Villager generated LLM discussion")
     
     print("\n" + "=" * 60)
     print("ALL TESTS COMPLETE")

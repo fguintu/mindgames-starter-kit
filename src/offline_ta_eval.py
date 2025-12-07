@@ -95,86 +95,125 @@ def run_game(env_id: str, num_players: int, model) -> dict:
     }
 
 
+def output_results(env_id, stats, role_stats, games_completed):
+    """Output current results to console and CSV."""
+    if games_completed == 0:
+        print("\nNo games completed. No results to show.")
+        return
+    
+    # Build results from stats
+    results = {
+        "env_id": [env_id],
+        "games": [games_completed],
+        "win_rate": [stats["wins"] / games_completed],
+        "loss_rate": [stats["losses"] / games_completed],
+        "draw_rate": [stats["draws"] / games_completed],
+        "invalid_rate": [stats["total_invalid_moves"] / games_completed],
+        "avg_turns": [stats["total_turns"] / games_completed],
+        "avg_model_reward": [stats["total_reward_model"] / games_completed],
+        "avg_opponent_reward": [stats["total_reward_opponent"] / games_completed],
+    }
+    
+    df = pd.DataFrame(results)
+    
+    print("\n" + "=" * 60)
+    print(f"EVALUATION SUMMARY ({games_completed} games completed)")
+    print(f"Opponent: {OPPONENT_MODEL}")
+    print("=" * 60)
+    print(df.to_markdown(index=False, floatfmt=".3f"))
+    
+    # Role breakdown
+    print("\n" + "=" * 60)
+    print("WIN RATE BY ROLE")
+    print("=" * 60)
+    for role, rstats in role_stats.items():
+        if rstats["games"] > 0:
+            win_rate = rstats["wins"] / rstats["games"]
+            print(f"{role}: {rstats['wins']}/{rstats['games']} ({win_rate:.1%})")
+    
+    # Save to CSV
+    os.makedirs("eval_results", exist_ok=True)
+    df.to_csv(f"eval_results/{FILE_NAME}", index=False)
+    print(f"\nSaved -> eval_results/{FILE_NAME}")
+
+
 # ===========================================
 # RUN EVALUATION
 # ===========================================
-results = defaultdict(list)
 role_stats = defaultdict(lambda: {"wins": 0, "losses": 0, "games": 0})
+games_completed = 0
+current_env_id = EVAL_ENV_IDS[0][0]  # Track current environment
 
-outer_bar = tqdm(EVAL_ENV_IDS, desc="Environments")
-for env_id, num_players in outer_bar:
-    
-    stats = dict(
-        wins=0,
-        losses=0,
-        draws=0,
-        total_reward_model=0.0,
-        total_reward_opponent=0.0,
-        total_invalid_moves=0,
-        total_turns=0,
-    )
-    
-    inner_bar = tqdm(range(NUM_EPISODES), desc=f"Evaluating {env_id}", leave=False)
-    for ep in inner_bar:
-        outcome = run_game(env_id, num_players, model)
+stats = dict(
+    wins=0,
+    losses=0,
+    draws=0,
+    total_reward_model=0.0,
+    total_reward_opponent=0.0,
+    total_invalid_moves=0,
+    total_turns=0,
+)
+
+try:
+    outer_bar = tqdm(EVAL_ENV_IDS, desc="Environments")
+    for env_id, num_players in outer_bar:
+        current_env_id = env_id
         
-        # W/L/D
-        if outcome["model_reward"] > outcome["opponent_reward"]:
-            stats["wins"] += 1
-            role_stats[outcome["model_role"]]["wins"] += 1
-        elif outcome["model_reward"] < outcome["opponent_reward"]:
-            stats["losses"] += 1
-            role_stats[outcome["model_role"]]["losses"] += 1
-        else:
-            stats["draws"] += 1
+        # Reset stats for each environment
+        stats = dict(
+            wins=0,
+            losses=0,
+            draws=0,
+            total_reward_model=0.0,
+            total_reward_opponent=0.0,
+            total_invalid_moves=0,
+            total_turns=0,
+        )
+        games_completed = 0
         
-        role_stats[outcome["model_role"]]["games"] += 1
-        
-        # Accumulate metrics
-        stats["total_reward_model"] += outcome["model_reward"]
-        stats["total_reward_opponent"] += outcome["opponent_reward"]
-        stats["total_invalid_moves"] += int(outcome["invalid_move"])
-        stats["total_turns"] += outcome["turn_count"]
-        
-        # Live progress bar
-        games_done = ep + 1
-        inner_bar.set_postfix({
-            "Win%": f"{stats['wins'] / games_done:.1%}",
-            "Loss%": f"{stats['losses'] / games_done:.1%}",
-            "Inv%": f"{stats['total_invalid_moves'] / games_done:.1%}",
-        })
-    
-    # Write per-environment summary
-    results["env_id"].append(env_id)
-    results["win_rate"].append(stats["wins"] / NUM_EPISODES)
-    results["loss_rate"].append(stats["losses"] / NUM_EPISODES)
-    results["draw_rate"].append(stats["draws"] / NUM_EPISODES)
-    results["invalid_rate"].append(stats["total_invalid_moves"] / NUM_EPISODES)
-    results["avg_turns"].append(stats["total_turns"] / NUM_EPISODES)
-    results["avg_model_reward"].append(stats["total_reward_model"] / NUM_EPISODES)
-    results["avg_opponent_reward"].append(stats["total_reward_opponent"] / NUM_EPISODES)
+        inner_bar = tqdm(range(NUM_EPISODES), desc=f"Evaluating {env_id}", leave=False)
+        for ep in inner_bar:
+            try:
+                outcome = run_game(env_id, num_players, model)
+            except Exception as e:
+                error_msg = str(e)
+                if "402" in error_msg or "credits" in error_msg.lower():
+                    print(f"\n\n⚠️  OpenRouter credits exhausted. Stopping evaluation early.")
+                    raise KeyboardInterrupt  # Use this to trigger the finally block
+                else:
+                    print(f"\n  Game {ep} failed with error: {e}")
+                    continue  # Skip this game and try the next one
+            
+            games_completed += 1
+            
+            # W/L/D
+            if outcome["model_reward"] > outcome["opponent_reward"]:
+                stats["wins"] += 1
+                role_stats[outcome["model_role"]]["wins"] += 1
+            elif outcome["model_reward"] < outcome["opponent_reward"]:
+                stats["losses"] += 1
+                role_stats[outcome["model_role"]]["losses"] += 1
+            else:
+                stats["draws"] += 1
+            
+            role_stats[outcome["model_role"]]["games"] += 1
+            
+            # Accumulate metrics
+            stats["total_reward_model"] += outcome["model_reward"]
+            stats["total_reward_opponent"] += outcome["opponent_reward"]
+            stats["total_invalid_moves"] += int(outcome["invalid_move"])
+            stats["total_turns"] += outcome["turn_count"]
+            
+            # Live progress bar
+            inner_bar.set_postfix({
+                "Win%": f"{stats['wins'] / games_completed:.1%}",
+                "Loss%": f"{stats['losses'] / games_completed:.1%}",
+                "Inv%": f"{stats['total_invalid_moves'] / games_completed:.1%}",
+            })
 
-# ===========================================
-# RESULTS
-# ===========================================
-df = pd.DataFrame(results)
+except KeyboardInterrupt:
+    print("\n\nEvaluation interrupted. Outputting partial results...")
 
-print("\n" + "=" * 60)
-print("EVALUATION SUMMARY")
-print(f"Opponent: {OPPONENT_MODEL}")
-print("=" * 60)
-print(df.to_markdown(index=False, floatfmt=".3f"))
-
-# Role breakdown
-print("\n" + "=" * 60)
-print("WIN RATE BY ROLE")
-print("=" * 60)
-for role, stats in role_stats.items():
-    if stats["games"] > 0:
-        win_rate = stats["wins"] / stats["games"]
-        print(f"{role}: {stats['wins']}/{stats['games']} ({win_rate:.1%})")
-
-# Save to CSV
-os.makedirs("eval_results", exist_ok=True)
-df.to_csv(f"eval_results/{FILE_NAME}", index=False)
-print(f"\nSaved -> eval_results/{FILE_NAME}")
+finally:
+    # Always output whatever results we have
+    output_results(current_env_id, stats, role_stats, games_completed)
