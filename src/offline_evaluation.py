@@ -168,6 +168,14 @@ print(df.to_markdown(index=False, floatfmt=".3f"))
 
 # Role breakdown
 print("\n" + "=" * 60)
+
+# Save summary to text file
+os.makedirs("eval_results", exist_ok=True)
+with open("eval_results/eval_summary.txt", "w") as f:
+    f.write("EVALUATION SUMMARY\n")
+    f.write("=" * 60 + "\n")
+    f.write(df.to_markdown(index=False, floatfmt=".3f"))
+    f.write("\n\n")
 print("WIN RATE BY ROLE")
 print("=" * 60)
 for role, stats in role_stats.items():
@@ -177,5 +185,5 @@ for role, stats in role_stats.items():
 
 # Save to CSV
 os.makedirs("eval_results", exist_ok=True)
-df.to_csv(f"eval_results/{FILE_NAME}", index=False)
-print(f"\nSaved -> eval_results/{FILE_NAME}")
+df.to_csv(f"random_eval_results/{FILE_NAME}", index=False)
+print(f"\nSaved -> random_eval_results/{FILE_NAME}")

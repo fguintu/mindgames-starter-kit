@@ -50,7 +50,7 @@ class ExpectimaxMafiaAgent(Agent):
         
         self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=False)
         hf_kwargs = hf_kwargs or {}
-        hf_kwargs.setdefault('dtype', torch.float16)
+        hf_kwargs.setdefault('torch_dtype', torch.float16)
         hf_kwargs.setdefault('trust_remote_code', False)
         
         if quantize:
@@ -581,21 +581,34 @@ CONFIDENCE: HIGH"""
         
         knowledge_str = "; ".join(knowledge) if knowledge else "No confirmed information yet"
         
-        if self.role == "Mafia":
-            role_context = f"""You are secretly Mafia. Your teammates are {self.teammates}.
-Your goal: Blend in, deflect suspicion from yourself and teammates, cast doubt on villagers.
-NEVER reveal you are Mafia. Act like a helpful villager."""
-        elif self.role == "Detective":
-            role_context = f"""You are the Detective.
-Your goal: Share your investigation results strategically to get Mafia voted out.
-If you have confirmed Mafia, consider revealing it - but be careful, Mafia may kill you tonight."""
+        # Role-specific strategic prompts
+        if self.role == "Detective":
+            alive_mafia = [p for p in self.confirmed_mafia if p in self.alive_players]
+            if alive_mafia:
+                # Critical: Be VERY direct about confirmed Mafia
+                role_context = f"""You are the Detective and you KNOW Player {alive_mafia[0]} is Mafia.
+Your goal: Convince everyone to vote out Player {alive_mafia[0]} NOW.
+Be assertive and urgent. Say you investigated them. Rally the village."""
+            else:
+                role_context = """You are the Detective but haven't found Mafia yet.
+Share your suspicions but don't reveal your role yet - you might get killed."""
+                
         elif self.role == "Doctor":
-            role_context = f"""You are the Doctor.
-Your goal: Help village find Mafia through discussion. Do NOT reveal you are Doctor (Mafia will kill you).
-Support Detective claims if they seem legitimate."""
-        else:
-            role_context = f"""You are a Villager.
-Your goal: Help identify Mafia through discussion and logic. Support credible Detective claims."""
+            role_context = f"""You are the Doctor (keep this secret - Mafia will kill you).
+Your goal: Help village find Mafia. Support any Detective claims you see.
+Act like a helpful villager. Agree with credible accusations."""
+        else:  # Villager
+            # Check if there's a detective accusation to support
+            active_accusations = [(acc, tgt) for acc, tgt in self.detective_accusations.items() 
+                                 if acc in self.alive_players and tgt in self.alive_players]
+            if active_accusations:
+                accuser, target = active_accusations[0]
+                role_context = f"""You are a Villager. Player {accuser} claims Player {target} is Mafia.
+Your goal: Support this accusation strongly. Rally others to vote [{target}].
+Be a team player - trust the Detective claim."""
+            else:
+                role_context = """You are a Villager with no special information.
+Your goal: Share observations, ask questions, help find Mafia through logic."""
         
         recent_statements = []
         for pid in alive_list:
@@ -632,10 +645,23 @@ Do not use brackets or player tags. Just output your message directly."""
         """Fallback discussion in case LLM fails."""
         suspects = self._get_top_suspects(exclude_confirmed=True)
         
+        # Detective with confirmed Mafia - be VERY direct
         if self.role == "Detective" and self.confirmed_mafia:
             alive_mafia = [p for p in self.confirmed_mafia if p in self.alive_players]
             if alive_mafia:
-                return f"I investigated Player {alive_mafia[0]} - they are Mafia. Vote them out."
+                target = alive_mafia[0]
+                phrases = [
+                    f"I am the Detective. I investigated Player {target} and they ARE Mafia. Vote them NOW.",
+                    f"Listen everyone - I'm Detective and Player {target} is confirmed Mafia. We must eliminate them.",
+                    f"Player {target} is Mafia - I investigated them. Trust me, vote them out.",
+                ]
+                return random.choice(phrases)
+        
+        # Villager/Doctor - support detective accusations
+        if self.role in ["Villager", "Doctor"]:
+            for accuser, accused in self.detective_accusations.items():
+                if accused in self.alive_players and accuser in self.alive_players:
+                    return f"I believe Player {accuser}. We should vote Player {accused}."
         
         if suspects:
             return f"I find Player {suspects[0]} suspicious based on their behavior."

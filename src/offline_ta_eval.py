@@ -1,12 +1,21 @@
 """
 Offline evaluation script for ExpectimaxMafiaAgent.
-Evaluates the agent against OpenRouter LLM opponents on SecretMafia-v0.
+Evaluates the agent against local HuggingFace LLM opponents on SecretMafia-v0.
+Optimized for Google Colab with GPU.
+
+Requirements:
+    pip install textarena transformers torch accelerate pandas tqdm bitsandbytes
 """
 import os
 import re
 import random
+import warnings
 from collections import defaultdict
-from dotenv import load_dotenv
+
+# Suppress noisy warnings
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+warnings.filterwarnings("ignore", message=".*pad_token_id.*")
+warnings.filterwarnings("ignore", message=".*Setting `pad_token_id`.*")
 
 import numpy as np
 import pandas as pd
@@ -15,36 +24,48 @@ from tqdm import tqdm
 import textarena as ta
 from myagent import ExpectimaxMafiaAgent
 
-# Load environment variables from .env file
-load_dotenv()
-
-# Verify API key is set
-if not os.getenv("OPENROUTER_API_KEY"):
-    raise ValueError("OPENROUTER_API_KEY not found. Create a .env file with: OPENROUTER_API_KEY=your_key_here")
-
 # ===========================================
 # CONFIGURATION
 # ===========================================
 NUM_EPISODES = 100
-EVAL_ENV_IDS = [("SecretMafia-v0", 6)]  # (env-id, num_players)
+EVAL_ENV_IDS = [("SecretMafia-v0", 6)]
 FILE_NAME = "eval_summary.csv"
-VERBOSE = False  # Set True to see game outcomes
+VERBOSE = True
 
-# OpenRouter opponent model
-OPPONENT_MODEL = "google/gemini-2.0-flash-lite-001"
-
+# Model configuration
+AGENT_MODEL = "microsoft/Phi-3-mini-4k-instruct"
+OPPONENT_MODEL = "meta-llama/Llama-3.1-8B-Instruct"
 
 # ===========================================
-# INITIALIZE MODEL
+# INITIALIZE MODELS
 # ===========================================
-print("Loading ExpectimaxMafiaAgent...")
+print("=" * 60)
+print("Loading models...")
+print("=" * 60)
+
+print(f"\n[1/2] Loading agent: {AGENT_MODEL}")
 model = ExpectimaxMafiaAgent(
-    model_name="microsoft/Phi-3-mini-4k-instruct",
+    model_name=AGENT_MODEL,
     verbose=VERBOSE,
     quantize=False,
 )
-print("Model loaded.\n")
-print(f"Opponent: {OPPONENT_MODEL}\n")
+print("Agent loaded.\n")
+
+print(f"[2/2] Loading opponent: {OPPONENT_MODEL}")
+print("    Using 8-bit quantization for faster inference...")
+shared_opponent = ta.agents.HFLocalAgent(
+    model_name=OPPONENT_MODEL,
+    max_new_tokens=64,
+    quantize=True,
+    hf_kwargs={},  # Prevents NoneType error
+)
+print("Opponent loaded.\n")
+
+print("=" * 60)
+print(f"Agent: {AGENT_MODEL}")
+print(f"Opponent: {OPPONENT_MODEL}")
+print(f"Episodes: {NUM_EPISODES}")
+print("=" * 60 + "\n")
 
 
 def run_game(env_id: str, num_players: int, model) -> dict:
@@ -55,11 +76,8 @@ def run_game(env_id: str, num_players: int, model) -> dict:
     # Randomly assign model to a player slot
     model_pid = np.random.randint(0, num_players)
     
-    # Create OpenRouter opponents for other players
-    opponents = {}
-    for i in range(num_players):
-        if i != model_pid:
-            opponents[i] = ta.agents.OpenRouterAgent(model_name=OPPONENT_MODEL)
+    # Reuse shared opponent for all other players (stateless, so this is fine)
+    opponents = {i: shared_opponent for i in range(num_players) if i != model_pid}
     
     # Reset model state for new game
     model.reset()
@@ -70,6 +88,9 @@ def run_game(env_id: str, num_players: int, model) -> dict:
         pid, obs = env.get_observation()
         turn_count += 1
         
+        if VERBOSE and turn_count % 10 == 0:
+            print(f"    Turn {turn_count}...", end="\r")
+        
         if pid == model_pid:
             action = model(obs)
         else:
@@ -79,12 +100,11 @@ def run_game(env_id: str, num_players: int, model) -> dict:
     
     rewards, game_info = env.close()
     
-    # Get model's role for analysis
     model_role = game_info[model_pid].get("role", "Unknown")
     model_won = rewards[model_pid] > 0
     
     if VERBOSE:
-        print(f"  Game finished: {model_role} -> {'WIN' if model_won else 'LOSS'}")
+        print(f"  Game finished: {model_role} -> {'WIN' if model_won else 'LOSS'} ({turn_count} turns)")
     
     return {
         "model_reward": rewards[model_pid],
@@ -101,7 +121,6 @@ def output_results(env_id, stats, role_stats, games_completed):
         print("\nNo games completed. No results to show.")
         return
     
-    # Build results from stats
     results = {
         "env_id": [env_id],
         "games": [games_completed],
@@ -118,11 +137,11 @@ def output_results(env_id, stats, role_stats, games_completed):
     
     print("\n" + "=" * 60)
     print(f"EVALUATION SUMMARY ({games_completed} games completed)")
+    print(f"Agent: {AGENT_MODEL}")
     print(f"Opponent: {OPPONENT_MODEL}")
     print("=" * 60)
     print(df.to_markdown(index=False, floatfmt=".3f"))
     
-    # Role breakdown
     print("\n" + "=" * 60)
     print("WIN RATE BY ROLE")
     print("=" * 60)
@@ -131,7 +150,6 @@ def output_results(env_id, stats, role_stats, games_completed):
             win_rate = rstats["wins"] / rstats["games"]
             print(f"{role}: {rstats['wins']}/{rstats['games']} ({win_rate:.1%})")
     
-    # Save to CSV
     os.makedirs("eval_results", exist_ok=True)
     df.to_csv(f"eval_results/{FILE_NAME}", index=False)
     print(f"\nSaved -> eval_results/{FILE_NAME}")
@@ -142,7 +160,7 @@ def output_results(env_id, stats, role_stats, games_completed):
 # ===========================================
 role_stats = defaultdict(lambda: {"wins": 0, "losses": 0, "games": 0})
 games_completed = 0
-current_env_id = EVAL_ENV_IDS[0][0]  # Track current environment
+current_env_id = EVAL_ENV_IDS[0][0]
 
 stats = dict(
     wins=0,
@@ -159,15 +177,10 @@ try:
     for env_id, num_players in outer_bar:
         current_env_id = env_id
         
-        # Reset stats for each environment
         stats = dict(
-            wins=0,
-            losses=0,
-            draws=0,
-            total_reward_model=0.0,
-            total_reward_opponent=0.0,
-            total_invalid_moves=0,
-            total_turns=0,
+            wins=0, losses=0, draws=0,
+            total_reward_model=0.0, total_reward_opponent=0.0,
+            total_invalid_moves=0, total_turns=0,
         )
         games_completed = 0
         
@@ -176,17 +189,11 @@ try:
             try:
                 outcome = run_game(env_id, num_players, model)
             except Exception as e:
-                error_msg = str(e)
-                if "402" in error_msg or "credits" in error_msg.lower():
-                    print(f"\n\n⚠️  OpenRouter credits exhausted. Stopping evaluation early.")
-                    raise KeyboardInterrupt  # Use this to trigger the finally block
-                else:
-                    print(f"\n  Game {ep} failed with error: {e}")
-                    continue  # Skip this game and try the next one
+                print(f"\n  Game {ep} failed: {e}")
+                continue
             
             games_completed += 1
             
-            # W/L/D
             if outcome["model_reward"] > outcome["opponent_reward"]:
                 stats["wins"] += 1
                 role_stats[outcome["model_role"]]["wins"] += 1
@@ -198,13 +205,11 @@ try:
             
             role_stats[outcome["model_role"]]["games"] += 1
             
-            # Accumulate metrics
             stats["total_reward_model"] += outcome["model_reward"]
             stats["total_reward_opponent"] += outcome["opponent_reward"]
             stats["total_invalid_moves"] += int(outcome["invalid_move"])
             stats["total_turns"] += outcome["turn_count"]
             
-            # Live progress bar
             inner_bar.set_postfix({
                 "Win%": f"{stats['wins'] / games_completed:.1%}",
                 "Loss%": f"{stats['losses'] / games_completed:.1%}",
@@ -215,5 +220,4 @@ except KeyboardInterrupt:
     print("\n\nEvaluation interrupted. Outputting partial results...")
 
 finally:
-    # Always output whatever results we have
     output_results(current_env_id, stats, role_stats, games_completed)
